@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Formatting gate: pure parse, no TensorRT/CUDA needed.
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # Hosted x86 runner: no TensorRT/CUDA — tensorrt-rs runs in stub mode
+  # (TRT_STUB=1: committed pregenerated bindings, no native compile/link).
+  check:
+    runs-on: ubuntu-latest
+    env:
+      TRT_STUB: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (stub)
+        run: cargo check --workspace --all-targets
+      - name: cargo clippy (stub)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo clippy (stub, builder feature)
+        run: cargo clippy --workspace --all-targets --features tensorrt-rs/builder -- -D warnings
+      # Stub builds must link too (src/stub_symbols.rs), so downstream GPU-free
+      # tests can run on hosted runners.
+      - name: cargo test (stub)
+        run: cargo test --workspace
+      - name: cargo doc (stub)
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Self-hosted Jetson runner: real TensorRT + CUDA.
+  # Register a runner on the Orin with labels [self-hosted, jetson], then
+  # remove the `if: false` guard.
+  jetson:
+    if: false  # enable once a self-hosted Jetson runner is registered
+    runs-on: [self-hosted, jetson]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (real TensorRT)
+        run: cargo build --release -j2
+      - name: Build (real TensorRT, builder feature)
+        run: cargo build --release -j2 --features tensorrt-rs/builder

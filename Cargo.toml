@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tensorrt-rs",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/kornia/tensorrt-rs"
+authors = ["Edgar Riba <edgar.riba@gmail.com>", "Kornia AI <contact@kornia.org>"]
