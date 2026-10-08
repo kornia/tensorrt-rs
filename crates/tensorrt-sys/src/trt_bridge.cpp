@@ -5,7 +5,7 @@
 //
 // When TensorRT updates:
 //   1. Install new TRT headers (apt)
-//   2. Run `cargo build -p tensorrt-rs` — fix any compile errors here
+//   2. Run `cargo build -p kornia-tensorrt-sys` — fix any compile errors here
 //   3. Most changes will be method renames or signature changes in the
 //      IRuntime/ICudaEngine/IExecutionContext interfaces.
 //   See UPDATING.md for the full checklist.

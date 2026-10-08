@@ -1,15 +1,18 @@
 [package]
-name = "tensorrt-rs"
+name = "kornia-tensorrt-sys"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
 description = "Raw FFI bindings to TensorRT 10.x — bindgen over a hand-written C bridge"
+authors.workspace = true
 readme = "README.md"
 links = "nvinfer"
 
 [lib]
-name = "tensorrt_rs"
+# Short lib name; the `kornia-` prefix is only there because the crates.io
+# names `tensorrt-rs` / `tensorrt-sys` / `tensorrt` belong to unrelated projects.
+name = "tensorrt_sys"
 
 [lints.rust]
 unsafe_code = "allow"

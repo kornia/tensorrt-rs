@@ -11,6 +11,8 @@ fn main() {
         println!("cargo:rustc-cfg=trt_stub");
         println!("cargo:rustc-env=TENSORRT_VERSION=0.0.0.0-stub");
         println!("cargo:rerun-if-env-changed=TRT_STUB");
+        // Direct dependents see this as DEP_NVINFER_STUB=1.
+        println!("cargo::metadata=stub=1");
         return;
     }
     println!("cargo:rerun-if-env-changed=TRT_STUB");
@@ -100,9 +102,22 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=cudart");
     println!("cargo:rustc-link-lib=dylib=stdc++");
 
+    // ── 4b. Exported metadata (`links = "nvinfer"`) ────────────────────────────────
+    // Direct dependents' build scripts read these as DEP_NVINFER_INCLUDE,
+    // DEP_NVINFER_LIB, DEP_NVINFER_CUDA_INCLUDE, DEP_NVINFER_CUDA_LIB and
+    // DEP_NVINFER_BRIDGE_INCLUDE (the btrt_* C headers), so a crate compiling its
+    // own TensorRT/CUDA code uses exactly the install this crate linked.
+    let bridge_inc = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("include");
+    println!("cargo::metadata=include={trt_inc}");
+    println!("cargo::metadata=lib={trt_lib}");
+    println!("cargo::metadata=cuda_include={cuda_inc}");
+    println!("cargo::metadata=cuda_lib={cuda_lib}");
+    println!("cargo::metadata=bridge_include={}", bridge_inc.display());
+
     // ── 5. Version constants — parsed from NvInferVersion.h, not hardcoded ─────────────
     let version = parse_trt_version(&trt_inc).unwrap_or_else(|| "10.3.0.30".to_string());
     println!("cargo:rustc-env=TENSORRT_VERSION={version}");
+    println!("cargo::metadata=version={version}");
     println!("cargo:rerun-if-changed={trt_inc}/NvInferVersion.h");
 
     // Warn (never fail) if the installed TRT is outside the tested range. The
