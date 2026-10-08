@@ -44,6 +44,9 @@ struct ShimEngine {
 
 struct ShimContext {
     nvinfer1::IExecutionContext* ctx{nullptr};
+    // Created with ExecutionContextAllocationStrategy::kUSER_MANAGED: the only
+    // contexts btrt_context_set_device_memory may bind memory to.
+    bool user_managed{false};
 };
 
 extern "C" {
@@ -214,7 +217,7 @@ btrt_context_t* btrt_context_create_user_memory(btrt_engine_t* engine) {
             set_error("btrt_context_create_user_memory: createExecutionContext returned null");
             return nullptr;
         }
-        return reinterpret_cast<btrt_context_t*>(new ShimContext{ctx});
+        return reinterpret_cast<btrt_context_t*>(new ShimContext{ctx, true});
     } catch (std::exception const& e) {
         set_error(e.what());
         return nullptr;
@@ -224,25 +227,50 @@ btrt_context_t* btrt_context_create_user_memory(btrt_engine_t* engine) {
     }
 }
 
-// TRT API: ICudaEngine::getDeviceMemorySizeV2() — NvInferRuntime.h
+// TRT API: ICudaEngine::getDeviceMemorySizeV2() — NvInferRuntime.h (noexcept)
 int64_t btrt_engine_device_memory_size(btrt_engine_t* engine) {
-    if (!engine) return -1;
-    try {
-        return reinterpret_cast<ShimEngine*>(engine)->engine->getDeviceMemorySizeV2();
-    } catch (...) {
+    clear_error();
+    if (!engine) {
+        set_error("btrt_engine_device_memory_size: null engine");
         return -1;
     }
+    return reinterpret_cast<ShimEngine*>(engine)->engine->getDeviceMemorySizeV2();
 }
 
 // TRT API: IExecutionContext::setDeviceMemoryV2(void*, int64_t) — NvInferRuntime.h
+// setDeviceMemoryV2 is `void ... noexcept`: TRT reports misuse only through the
+// ILogger and the failure surfaces later at enqueue. So every check that can be
+// made here is made here, before binding.
 int32_t btrt_context_set_device_memory(btrt_context_t* ctx, void* ptr, int64_t bytes) {
-    if (!ctx || !ptr || bytes < 0) return -1;
-    try {
-        reinterpret_cast<ShimContext*>(ctx)->ctx->setDeviceMemoryV2(ptr, bytes);
-        return 0;
-    } catch (...) {
+    clear_error();
+    if (!ctx) {
+        set_error("btrt_context_set_device_memory: null ctx");
         return -1;
     }
+    auto* sc = reinterpret_cast<ShimContext*>(ctx);
+    if (!sc->user_managed) {
+        set_error("btrt_context_set_device_memory: context was not created with "
+                  "btrt_context_create_user_memory");
+        return -1;
+    }
+    if (bytes < 0) {
+        set_error("btrt_context_set_device_memory: negative bytes");
+        return -1;
+    }
+    // TRT: "Setting memory to nullptr is acceptable if the reported size is 0".
+    if (!ptr && bytes != 0) {
+        set_error("btrt_context_set_device_memory: null ptr with nonzero bytes");
+        return -1;
+    }
+    // Re-queried on every bind: the size is stateful (setWeightStreamingBudgetV2).
+    int64_t const need = sc->ctx->getEngine().getDeviceMemorySizeV2();
+    if (bytes < need) {
+        set_error("btrt_context_set_device_memory: buffer smaller than "
+                  "getDeviceMemorySizeV2");
+        return -1;
+    }
+    sc->ctx->setDeviceMemoryV2(ptr, bytes);
+    return 0;
 }
 
 // TRT API: delete IExecutionContext — NvInferRuntime.h
