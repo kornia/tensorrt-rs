@@ -70,6 +70,44 @@ int32_t btrt_engine_tensor_shape(btrt_engine_t* engine, const char* name,
    TRT API: ICudaEngine::createExecutionContext() — NvInferRuntime.h */
 btrt_context_t* btrt_context_create(btrt_engine_t* engine);
 
+/* Like btrt_context_create, but the context owns NO activation (scratch)
+   memory: ExecutionContextAllocationStrategy::kUSER_MANAGED. Bind a buffer
+   with btrt_context_set_device_memory before enqueue; enqueue on a context
+   with no buffer bound fails. Contexts of different engines run one after
+   another on one stream can then share a single scratch buffer.
+   Returns NULL on failure. Check btrt_last_error() for details.
+   TRT API: ICudaEngine::createExecutionContext(ExecutionContextAllocationStrategy)
+            — NvInferRuntime.h */
+btrt_context_t* btrt_context_create_user_memory(btrt_engine_t* engine);
+
+/* Activation (scratch) bytes one context of this engine needs: the MAXIMUM
+   over all optimization profiles. The value is stateful: it changes with the
+   weight-streaming budget (setWeightStreamingBudgetV2), so re-query it after a
+   budget change. May be 0.
+   Returns -1 on failure. Check btrt_last_error() for details.
+   TRT API: ICudaEngine::getDeviceMemorySizeV2() — NvInferRuntime.h */
+int64_t btrt_engine_device_memory_size(btrt_engine_t* engine);
+
+/* Bind `bytes` of device memory at `ptr` as the scratch memory of a context
+   made by btrt_context_create_user_memory.
+   Contract:
+   - The context never owns or frees the buffer; the caller does, and must
+     keep it valid for as long as it stays bound or any enqueue on it runs.
+   - From btrt_context_enqueue_v3 until that stream work completes the buffer
+     is in use: freeing it, or using it from any other context, is undefined
+     behaviour. Sharing one buffer between contexts is therefore only sound
+     when they are serialized on one stream or fenced with events.
+   - ptr must be CUDA-aligned (cudaMalloc / cudarc allocations are).
+   - ptr may be NULL only when bytes == 0 (valid when the engine needs 0).
+   - bytes must be >= btrt_engine_device_memory_size(engine) as queried now.
+   Only these argument checks are made here: TRT's setDeviceMemoryV2 returns
+   nothing, so any other error reaches only the logger and enqueue.
+   Returns 0 on success, -1 on failure (null ctx, context not user-managed,
+   negative bytes, NULL ptr with bytes != 0, buffer too small).
+   Check btrt_last_error() for details.
+   TRT API: IExecutionContext::setDeviceMemoryV2(void*, int64_t) — NvInferRuntime.h */
+int32_t btrt_context_set_device_memory(btrt_context_t* ctx, void* ptr, int64_t bytes);
+
 /* Destroy context.
    TRT API: delete IExecutionContext — NvInferRuntime.h */
 void btrt_context_destroy(btrt_context_t* ctx);
