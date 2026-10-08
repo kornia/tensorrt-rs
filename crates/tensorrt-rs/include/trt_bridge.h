@@ -70,6 +70,18 @@ int32_t btrt_engine_tensor_shape(btrt_engine_t* engine, const char* name,
    TRT API: ICudaEngine::createExecutionContext() — NvInferRuntime.h */
 btrt_context_t* btrt_context_create(btrt_engine_t* engine);
 
+// Like btrt_context_create, but the context owns NO activation memory
+// (ExecutionContextAllocationStrategy::kUSER_MANAGED): bind one with
+// btrt_context_set_device_memory before enqueue. Engines run one after another
+// on one stream can then share a single scratch buffer.
+btrt_context_t* btrt_context_create_user_memory(btrt_engine_t* engine);
+
+// ICudaEngine::getDeviceMemorySizeV2(): activation bytes one context needs. -1 on error.
+int64_t btrt_engine_device_memory_size(btrt_engine_t* engine);
+
+// IExecutionContext::setDeviceMemoryV2(): 0 on success, -1 on error.
+int32_t btrt_context_set_device_memory(btrt_context_t* ctx, void* ptr, int64_t bytes);
+
 /* Destroy context.
    TRT API: delete IExecutionContext — NvInferRuntime.h */
 void btrt_context_destroy(btrt_context_t* ctx);

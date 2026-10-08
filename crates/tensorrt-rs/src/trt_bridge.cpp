@@ -199,6 +199,52 @@ btrt_context_t* btrt_context_create(btrt_engine_t* engine) {
     }
 }
 
+// TRT API: ICudaEngine::createExecutionContext(ExecutionContextAllocationStrategy) — NvInferRuntime.h
+btrt_context_t* btrt_context_create_user_memory(btrt_engine_t* engine) {
+    clear_error();
+    if (!engine) {
+        set_error("btrt_context_create_user_memory: null engine");
+        return nullptr;
+    }
+    try {
+        auto* se = reinterpret_cast<ShimEngine*>(engine);
+        nvinfer1::IExecutionContext* ctx = se->engine->createExecutionContext(
+            nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED);
+        if (!ctx) {
+            set_error("btrt_context_create_user_memory: createExecutionContext returned null");
+            return nullptr;
+        }
+        return reinterpret_cast<btrt_context_t*>(new ShimContext{ctx});
+    } catch (std::exception const& e) {
+        set_error(e.what());
+        return nullptr;
+    } catch (...) {
+        set_error("btrt_context_create_user_memory: unknown exception");
+        return nullptr;
+    }
+}
+
+// TRT API: ICudaEngine::getDeviceMemorySizeV2() — NvInferRuntime.h
+int64_t btrt_engine_device_memory_size(btrt_engine_t* engine) {
+    if (!engine) return -1;
+    try {
+        return reinterpret_cast<ShimEngine*>(engine)->engine->getDeviceMemorySizeV2();
+    } catch (...) {
+        return -1;
+    }
+}
+
+// TRT API: IExecutionContext::setDeviceMemoryV2(void*, int64_t) — NvInferRuntime.h
+int32_t btrt_context_set_device_memory(btrt_context_t* ctx, void* ptr, int64_t bytes) {
+    if (!ctx || !ptr || bytes < 0) return -1;
+    try {
+        reinterpret_cast<ShimContext*>(ctx)->ctx->setDeviceMemoryV2(ptr, bytes);
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
 // TRT API: delete IExecutionContext — NvInferRuntime.h
 void btrt_context_destroy(btrt_context_t* ctx) {
     if (!ctx) return;

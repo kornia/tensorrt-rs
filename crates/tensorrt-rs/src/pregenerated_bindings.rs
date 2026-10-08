@@ -90,6 +90,19 @@ extern "C" {
     pub fn btrt_context_create(engine: *mut btrt_engine_t) -> *mut btrt_context_t;
 }
 extern "C" {
+    pub fn btrt_context_create_user_memory(engine: *mut btrt_engine_t) -> *mut btrt_context_t;
+}
+extern "C" {
+    pub fn btrt_engine_device_memory_size(engine: *mut btrt_engine_t) -> i64;
+}
+extern "C" {
+    pub fn btrt_context_set_device_memory(
+        ctx: *mut btrt_context_t,
+        ptr: *mut ::std::os::raw::c_void,
+        bytes: i64,
+    ) -> i32;
+}
+extern "C" {
     pub fn btrt_context_destroy(ctx: *mut btrt_context_t);
 }
 extern "C" {
