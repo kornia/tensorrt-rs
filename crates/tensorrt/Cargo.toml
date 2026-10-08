@@ -1,0 +1,42 @@
+[package]
+name = "kornia-tensorrt"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Safe Rust API for TensorRT 10.x (Logger -> Runtime -> Engine -> Session) over kornia-tensorrt-sys"
+readme = "README.md"
+
+[lib]
+# Short lib name; the `kornia-` prefix only exists because the crates.io name
+# `tensorrt` belongs to an unrelated project.
+name = "tensorrt"
+
+[features]
+default = []
+# In-process ONNX -> engine builder (links libnvonnxparser via kornia-tensorrt-sys)
+builder = ["kornia-tensorrt-sys/builder"]
+
+[dependencies]
+kornia-tensorrt-sys = { path = "../tensorrt-sys", version = "0.2.0" }
+thiserror = "2.0"
+log = "0.4"
+# cudarc feature choice:
+# - `fallback-dynamic-loading`: libcuda is dlopen'ed at first use, never linked,
+#   so hosted CI (no CUDA installed, TRT_STUB=1) can check/clippy/test/doc.
+# - `cuda-version-from-build-system` + `fallback-latest`: on a CUDA host
+#   (the Orin) the version comes from `nvcc --version`; with no nvcc, cudarc
+#   warns and uses its latest bindings instead of failing the build. We do NOT
+#   pin a `cuda-120x0` feature: features unify, so a pin here would silently
+#   override the detected version for every other cudarc user in the graph
+#   (kornia-rs, vision-rt use exactly this set), and two different pins fail
+#   to build.
+# - only `driver` + `std`: streams and device buffers; no nvrtc/cublas.
+cudarc = { version = "0.19", default-features = false, features = [
+    "cuda-version-from-build-system",
+    "fallback-latest",
+    "fallback-dynamic-loading",
+    "driver",
+    "std",
+] }

@@ -1,0 +1,238 @@
+use crate::{
+    error::{last_trt_error, Result, TrtError},
+    logger::{Logger, Severity},
+    runtime::Runtime,
+};
+use std::path::Path;
+use std::sync::Arc;
+use tensorrt_sys::*;
+
+/// I/O mode of a tensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TensorMode {
+    None = 0,
+    Input = 1,
+    Output = 2,
+}
+
+/// Data type of a tensor.
+///
+/// Discriminants mirror `nvinfer1::DataType` exactly (NvInferRuntimeBase.h) — the
+/// bridge returns that enum's raw `int32_t`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataType {
+    Float32 = 0,
+    Float16 = 1,
+    Int8 = 2,
+    Int32 = 3,
+    Bool = 4,
+    UInt8 = 5,
+    /// `kBF16` — reachable since engines can be built with `BuilderFlag::kBF16`.
+    Bf16 = 7,
+}
+
+impl DataType {
+    /// Map the bridge's raw `nvinfer1::DataType` code. `None` for every code this
+    /// crate does not model (kFP8=6, kINT64=8, kINT4=9, ...) — never a fallback.
+    pub(crate) fn from_raw(raw: i32) -> Option<Self> {
+        Some(match raw {
+            0 => DataType::Float32,
+            1 => DataType::Float16,
+            2 => DataType::Int8,
+            3 => DataType::Int32,
+            4 => DataType::Bool,
+            5 => DataType::UInt8,
+            7 => DataType::Bf16,
+            _ => return None,
+        })
+    }
+}
+
+/// Metadata for one engine I/O tensor (discovered via named-tensor API).
+#[derive(Debug, Clone)]
+pub struct TensorSpec {
+    pub name: String,
+    pub mode: TensorMode,
+    pub dtype: DataType,
+    /// Shape dims. `-1` means dynamic (resolved at runtime via `setInputShape`).
+    pub dims: Vec<i64>,
+}
+
+/// Wraps `nvinfer1::ICudaEngine`. `Send + Sync` — TRT guarantees ICudaEngine
+/// is thread-safe for creating execution contexts and read-only queries.
+///
+/// # Ownership
+/// Holds `Arc<Runtime>` (and transitively `Arc<Logger>`) for correct Drop ordering.
+pub struct Engine {
+    ptr: *mut btrt_engine_t,
+    _runtime: Arc<Runtime>,
+    pub(crate) specs: Vec<TensorSpec>,
+}
+
+// SAFETY: ICudaEngine is documented as thread-safe for concurrent context
+// creation and read-only operations. We own the pointer exclusively.
+unsafe impl Send for Engine {}
+unsafe impl Sync for Engine {}
+
+impl Engine {
+    /// Load a pre-built `.engine` file from disk.
+    pub fn from_file(runtime: Arc<Runtime>, path: impl AsRef<Path>) -> Result<Arc<Self>> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| TrtError::Deserialize(format!("could not read file: {e}")))?;
+        Self::deserialize(runtime, &bytes)
+    }
+
+    /// Convenience: load a `.engine` with a fresh `Logger`(Warning)→`Runtime` — the
+    /// common case for a self-contained model that doesn't already own a runtime.
+    pub fn load(path: impl AsRef<Path>) -> Result<Arc<Self>> {
+        let runtime = Runtime::new(Logger::new(Severity::Warning)?)?;
+        Self::from_file(runtime, path)
+    }
+
+    /// Deserialize from raw bytes (e.g. built by `trtexec` or the in-process builder).
+    pub fn deserialize(runtime: Arc<Runtime>, bytes: &[u8]) -> Result<Arc<Self>> {
+        let ptr = unsafe {
+            btrt_engine_deserialize(runtime.as_ptr(), bytes.as_ptr() as *const _, bytes.len())
+        };
+        if ptr.is_null() {
+            let msg = last_trt_error();
+            return Err(TrtError::Deserialize(if msg.is_empty() {
+                "unknown error (wrong TRT version or architecture?)".into()
+            } else {
+                msg
+            }));
+        }
+        let specs = discover_specs(ptr)?;
+        Ok(Arc::new(Self {
+            ptr,
+            _runtime: runtime,
+            specs,
+        }))
+    }
+
+    pub fn specs(&self) -> &[TensorSpec] {
+        &self.specs
+    }
+    pub fn inputs(&self) -> impl Iterator<Item = &TensorSpec> {
+        self.specs.iter().filter(|s| s.mode == TensorMode::Input)
+    }
+    pub fn outputs(&self) -> impl Iterator<Item = &TensorSpec> {
+        self.specs.iter().filter(|s| s.mode == TensorMode::Output)
+    }
+    /// Names of the input tensors, in engine order.
+    pub fn input_names(&self) -> Vec<String> {
+        self.inputs().map(|s| s.name.clone()).collect()
+    }
+    /// Names of the output tensors, in engine order.
+    pub fn output_names(&self) -> Vec<String> {
+        self.outputs().map(|s| s.name.clone()).collect()
+    }
+
+    /// Bytes of device (activation) memory an execution context of this engine
+    /// needs, across all optimization profiles (`getDeviceMemorySizeV2`).
+    ///
+    /// This is the minimum size of the buffer passed to
+    /// [`Session::set_device_memory`](crate::Session::set_device_memory) for a
+    /// session created with
+    /// [`Session::with_stream_user_memory`](crate::Session::with_stream_user_memory).
+    /// Several engines that never run concurrently can share one buffer sized to
+    /// the largest of their values.
+    pub fn device_memory_size(&self) -> Result<usize> {
+        let n = unsafe { btrt_engine_device_memory_size(self.ptr) };
+        // The bridge returns -1 on failure without setting btrt_last_error, so
+        // do not attach (a possibly stale) last error here.
+        usize::try_from(n)
+            .map_err(|_| TrtError::Trt(format!("getDeviceMemorySizeV2 failed (returned {n})")))
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut btrt_engine_t {
+        self.ptr
+    }
+}
+
+fn discover_specs(engine: *mut btrt_engine_t) -> Result<Vec<TensorSpec>> {
+    let n = unsafe { btrt_engine_num_io_tensors(engine) };
+    let mut specs = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let name_ptr = unsafe { btrt_engine_io_tensor_name(engine, i) };
+        let name = unsafe {
+            std::ffi::CStr::from_ptr(name_ptr)
+                .to_string_lossy()
+                .into_owned()
+        };
+        let c_name = std::ffi::CString::new(name.as_bytes()).unwrap();
+        let mode = match unsafe { btrt_engine_tensor_io_mode(engine, c_name.as_ptr()) } {
+            1 => TensorMode::Input,
+            2 => TensorMode::Output,
+            _ => TensorMode::None,
+        };
+        // No catch-all to Float32: that made every dtype this crate does not model
+        // (kFP8=6, kINT64=8, kINT4=9) claim to be f32, so `f32_ptr()` handed out a
+        // pointer to differently-sized elements and the decode kernels read garbage
+        // with no error anywhere. Fail the load instead.
+        let raw_dtype = unsafe { btrt_engine_tensor_dtype(engine, c_name.as_ptr()) };
+        let dtype = DataType::from_raw(raw_dtype).ok_or_else(|| {
+            TrtError::Trt(format!(
+                "tensor '{name}' has unsupported nvinfer1::DataType {raw_dtype}"
+            ))
+        })?;
+        let mut raw_dims = [0i64; 8];
+        let mut ndims = 0i32;
+        let rc = unsafe {
+            btrt_engine_tensor_shape(engine, c_name.as_ptr(), raw_dims.as_mut_ptr(), &mut ndims)
+        };
+        // A failed query left ndims at 0 → empty dims → silent buffer
+        // under-allocation downstream. Surface it, and bound ndims to the buffer.
+        if rc != 0 || ndims < 0 || ndims as usize > raw_dims.len() {
+            return Err(TrtError::Trt(format!(
+                "failed to query shape for tensor '{name}' (rc={rc}, ndims={ndims})"
+            )));
+        }
+        let dims = raw_dims[..ndims as usize].to_vec();
+        specs.push(TensorSpec {
+            name,
+            mode,
+            dtype,
+            dims,
+        });
+    }
+    Ok(specs)
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // SAFETY: unique owner; all Contexts (which hold Arc<Engine>) have
+        // dropped before this fires.
+        unsafe {
+            btrt_engine_destroy(self.ptr);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_type_codes_mirror_nvinfer() {
+        for dt in [
+            DataType::Float32,
+            DataType::Float16,
+            DataType::Int8,
+            DataType::Int32,
+            DataType::Bool,
+            DataType::UInt8,
+            DataType::Bf16,
+        ] {
+            assert_eq!(DataType::from_raw(dt as i32), Some(dt));
+        }
+    }
+
+    #[test]
+    fn unmodelled_data_types_are_rejected_not_defaulted() {
+        // kFP8, kINT64, kINT4, and garbage: none may silently become Float32.
+        for raw in [6, 8, 9, -1, 42] {
+            assert_eq!(DataType::from_raw(raw), None, "raw code {raw}");
+        }
+    }
+}

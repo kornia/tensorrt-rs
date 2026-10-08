@@ -6,7 +6,7 @@
 //! compiled out in stub mode. Run on the Jetson with:
 //!
 //! ```text
-//! cargo test -p tensorrt-rs --features builder --test user_device_memory -- --ignored
+//! cargo test -p kornia-tensorrt-sys --features builder --test user_device_memory -- --ignored
 //! ```
 //!
 //! The model defaults to the TensorRT sample MNIST net; override with
@@ -15,7 +15,7 @@
 
 use std::ffi::{c_void, CStr, CString};
 use std::ptr;
-use tensorrt_rs::*;
+use tensorrt_sys::*;
 
 extern "C" {
     fn cudaMalloc(p: *mut *mut c_void, bytes: usize) -> i32;

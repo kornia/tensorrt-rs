@@ -2,7 +2,7 @@
 // Everything else (runtime/engine/context) is in trt_bridge.cpp and calls
 // TRT headers directly. When TensorRT updates:
 //   1. Install new TRT headers (apt)
-//   2. Run `cargo build -p tensorrt-rs` — fix any compile errors here first
+//   2. Run `cargo build -p kornia-tensorrt-sys` — fix any compile errors here first
 //   3. If ILogger::log() signature changed, fix the `log()` override below.
 //   See UPDATING.md for the full checklist.
 

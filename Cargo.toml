@@ -1,11 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/tensorrt-rs",
+    "crates/tensorrt-sys",
+    "crates/tensorrt",
 ]
 
 [workspace.package]
-version = "0.1.0"
+# 0.2.0: breaking — the crate was renamed (tensorrt-rs / tensorrt_rs ->
+# kornia-tensorrt-sys / tensorrt_sys) and the safe kornia-tensorrt crate added.
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/kornia/tensorrt-rs"

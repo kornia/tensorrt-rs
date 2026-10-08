@@ -8,13 +8,13 @@ committed bindings without any of this.
 
 ---
 
-## Files to change in `crates/tensorrt-rs`
+## Files to change in `crates/tensorrt-sys`
 
 ### `src/trt_bridge.cpp`
 
 This is the C++ bridge that wraps TRT's abstract C++ API and exposes a flat C surface (`btrt_*` functions). Each function has a comment referencing the exact TRT header and method it wraps.
 
-When TRT renames or changes a method, the C++ compiler reports an error here on `cargo build -p tensorrt-rs`. Fix the error, then proceed.
+When TRT renames or changes a method, the C++ compiler reports an error here on `cargo build -p kornia-tensorrt-sys`. Fix the error, then proceed.
 
 ### `src/logger_shim.cpp`
 
@@ -52,9 +52,11 @@ TRT 10.x minor releases: the named-tensor I/O API (`setTensorAddress`, `getIOTen
    grep NV_TENSORRT /usr/include/aarch64-linux-gnu/NvInferVersion.h
    ```
 
-2. Build `tensorrt-rs` — the C++ compiler catches API breakage:
+2. Build `kornia-tensorrt-sys` — the C++ compiler catches API breakage — then
+   the safe crate on top:
    ```
-   cargo build -p tensorrt-rs
+   cargo build -p kornia-tensorrt-sys
+   cargo build --workspace --features kornia-tensorrt/builder
    ```
    Fix any errors in `trt_bridge.cpp` (and rarely `logger_shim.cpp`).
 
