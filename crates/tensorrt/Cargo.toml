@@ -25,9 +25,14 @@ log = "0.4"
 # cudarc feature choice:
 # - `fallback-dynamic-loading`: libcuda is dlopen'ed at first use, never linked,
 #   so hosted CI (no CUDA installed, TRT_STUB=1) can check/clippy/test/doc.
-# - `cuda-version-from-build-system` + `fallback-latest`: on a CUDA host
-#   (the Orin) the version comes from `nvcc --version`; with no nvcc, cudarc
-#   warns and uses its latest bindings instead of failing the build. We do NOT
+# - `cuda-version-from-build-system` + `fallback-latest`: the CUDA version comes
+#   from `$CUDARC_CUDA_VERSION` if set, else from `nvcc --version`; with neither,
+#   cudarc warns and uses its LATEST bindings instead of failing the build. That
+#   includes the Orin: JetPack leaves /usr/local/cuda/bin off PATH, so a plain
+#   build there gets CUDA 13.x bindings against the 12.6 libcuda, and any newer
+#   symbol fails only at run time (cudarc loads symbols lazily). For a real-GPU
+#   build set `CUDARC_CUDA_VERSION=12060` (JetPack 6) or put
+#   /usr/local/cuda/bin on PATH. We do NOT
 #   pin a `cuda-120x0` feature: features unify, so a pin here would silently
 #   override the detected version for every other cudarc user in the graph
 #   (kornia-rs, vision-rt use exactly this set), and two different pins fail

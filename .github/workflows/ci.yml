@@ -38,12 +38,18 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo clippy (stub, builder feature)
         run: cargo clippy --workspace --all-targets --features kornia-tensorrt-sys/builder,kornia-tensorrt/builder -- -D warnings
-      # Stub builds must link too (src/stub_symbols.rs), so downstream GPU-free
-      # tests can run on hosted runners.
+      # Stub builds must link too (crates/tensorrt-sys/src/stub_symbols.rs), so
+      # downstream GPU-free tests can run on hosted runners.
       - name: cargo test (stub)
         run: cargo test --workspace
+      - name: cargo test (stub, builder feature)
+        run: cargo test --workspace --features kornia-tensorrt/builder
       - name: cargo doc (stub)
         run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: cargo doc (stub, builder feature)
+        run: cargo doc --workspace --no-deps --features kornia-tensorrt/builder
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -53,6 +59,10 @@ jobs:
   jetson:
     if: false  # enable once a self-hosted Jetson runner is registered
     runs-on: [self-hosted, jetson]
+    env:
+      # JetPack leaves nvcc off PATH, so without this cudarc silently falls back
+      # to its latest (CUDA 13.x) bindings instead of the device's 12.6.
+      CUDARC_CUDA_VERSION: "12060"
     steps:
       - uses: actions/checkout@v4
       - name: Build (real TensorRT)

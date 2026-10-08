@@ -114,6 +114,73 @@ enum DeviceMemory {
     UserManaged { set: bool },
 }
 
+/// The alignment `set_device_memory` checks at run time. TensorRT's real rule is
+/// the device's CUDA memory alignment property, which may be stricter; this only
+/// catches the common misuse (an arbitrary offset into a larger allocation).
+const MIN_DEVICE_MEMORY_ALIGN: usize = 256;
+
+impl DeviceMemory {
+    /// Validate `set_device_memory(ptr, bytes)` against this state.
+    ///
+    /// `needed` (the engine's `device_memory_size`) is only queried once the state
+    /// allows a bind. Returns the state to record once the bind succeeds and
+    /// `bytes` as the `i64` the bridge takes. Mirrors the bridge's own checks so a
+    /// misuse fails here with a specific error.
+    fn check_bind(
+        self,
+        ptr: usize,
+        bytes: usize,
+        needed: impl FnOnce() -> Result<usize>,
+    ) -> Result<(Self, i64)> {
+        if self == Self::Owned {
+            return Err(TrtError::DeviceMemory(
+                "set_device_memory: this session owns its device memory; create it with \
+                 Session::with_stream_user_memory"
+                    .into(),
+            ));
+        }
+        let needed = needed()?;
+        if ptr == 0 {
+            // TensorRT: "Setting memory to nullptr is acceptable if the reported
+            // size is 0", and the bridge accepts NULL only together with 0 bytes.
+            if needed != 0 || bytes != 0 {
+                return Err(TrtError::DeviceMemory(format!(
+                    "set_device_memory: null device pointer with {bytes} bytes \
+                     (the engine needs {needed}); null is only valid as (null, 0) \
+                     for an engine that needs 0 bytes"
+                )));
+            }
+        } else if !ptr.is_multiple_of(MIN_DEVICE_MEMORY_ALIGN) {
+            return Err(TrtError::DeviceMemory(format!(
+                "set_device_memory: device pointer {ptr:#x} is not aligned to \
+                 {MIN_DEVICE_MEMORY_ALIGN} bytes"
+            )));
+        }
+        if bytes < needed {
+            return Err(TrtError::DeviceMemory(format!(
+                "set_device_memory: buffer is {bytes} bytes but the engine needs {needed}"
+            )));
+        }
+        let len = i64::try_from(bytes).map_err(|_| {
+            TrtError::DeviceMemory(format!("set_device_memory: {bytes} bytes overflows i64"))
+        })?;
+        Ok((Self::UserManaged { set: true }, len))
+    }
+
+    /// A user-managed context has no activation memory until the caller gives it
+    /// some; enqueueing then would hand TensorRT no scratch space at all.
+    fn check_run(self) -> Result<()> {
+        if self == (Self::UserManaged { set: false }) {
+            return Err(TrtError::DeviceMemory(
+                "session was created with user-managed device memory; call \
+                 set_device_memory before running"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A caller-supplied device buffer standing in for one session-owned output buffer.
 #[derive(Clone, Copy)]
 struct BoundOutput {
@@ -215,13 +282,23 @@ impl Session {
     /// the device memory TensorRT uses for activations (`setDeviceMemoryV2`).
     ///
     /// May be called again to switch buffers between runs. Fails (without touching
-    /// the context) on a session that owns its memory, on a null `ptr`, or when
-    /// `bytes` is smaller than [`Engine::device_memory_size`].
+    /// the context) on a session that owns its memory, on a null `ptr` (unless
+    /// the engine needs 0 bytes: `(null, 0)` is then valid), on a `ptr` not
+    /// aligned to 256 bytes, or when `bytes` is smaller than
+    /// [`Engine::device_memory_size`], which is re-queried on every call.
+    ///
+    /// `Ok` means the buffer passed these checks and was handed to TensorRT.
+    /// TensorRT's `setDeviceMemoryV2` returns nothing, so if TensorRT itself
+    /// rejects the buffer it reports that only through the [`Logger`](crate::Logger),
+    /// and the next run fails.
     ///
     /// # Safety
     /// - `ptr` must be a CUDA device allocation in the same CUDA context as the
-    ///   engine, at least `bytes` long, aligned to 256 bytes (`cudaMalloc` /
-    ///   `cuMemAlloc` / cudarc allocations are).
+    ///   engine, at least `bytes` long, and aligned to the device's CUDA memory
+    ///   alignment property (TensorRT's rule; see `cudaGetDeviceProperties`). A
+    ///   base pointer straight from `cudaMalloc` / `cuMemAlloc` / cudarc meets it.
+    ///   A sub-range carved out of a larger allocation must keep that alignment,
+    ///   which may be stricter than the 256 bytes checked here.
     /// - **The buffer must outlive every run that uses it.** It must stay allocated
     ///   and unmoved from this call until this session is dropped or given another
     ///   buffer, *and* until all work those runs enqueued has completed (a sync of
@@ -236,32 +313,17 @@ impl Session {
     /// - The contents are scratch: TensorRT does not preserve them between runs,
     ///   and the caller must not rely on them.
     pub unsafe fn set_device_memory(&mut self, ptr: *mut c_void, bytes: usize) -> Result<()> {
-        if self.device_memory == DeviceMemory::Owned {
-            return Err(TrtError::Trt(
-                "set_device_memory: this session owns its device memory; create it with \
-                 Session::with_stream_user_memory"
-                    .into(),
-            ));
-        }
-        if ptr.is_null() {
-            return Err(TrtError::Shape(
-                "set_device_memory: null device pointer".into(),
-            ));
-        }
-        let needed = self._engine.device_memory_size()?;
-        if bytes < needed {
-            return Err(TrtError::Shape(format!(
-                "set_device_memory: buffer is {bytes} bytes but the engine needs {needed}"
-            )));
-        }
-        let len = i64::try_from(bytes).map_err(|_| {
-            TrtError::Shape(format!("set_device_memory: {bytes} bytes overflows i64"))
-        })?;
+        let engine = &self._engine;
+        let (state, len) = self
+            .device_memory
+            .check_bind(ptr as usize, bytes, || engine.device_memory_size())?;
+        // The bridge repeats these checks (and the user-managed one) and sets
+        // btrt_last_error on every rejection.
         let rc = unsafe { btrt_context_set_device_memory(self.ctx, ptr, len) };
         if rc != 0 {
-            return Err(TrtError::Trt(format!("setDeviceMemoryV2 failed (rc={rc})")));
+            return Err(TrtError::DeviceMemory(last_trt_error()));
         }
-        self.device_memory = DeviceMemory::UserManaged { set: true };
+        self.device_memory = state;
         Ok(())
     }
 
@@ -366,15 +428,7 @@ impl Session {
         &mut self,
         device_inputs: &[(&str, *mut std::ffi::c_void, &[i64])],
     ) -> Result<HashMap<String, OutputView>> {
-        // A user-managed context has no activation memory until the caller gives it
-        // some; enqueueing then would hand TensorRT no scratch space at all.
-        if self.device_memory == (DeviceMemory::UserManaged { set: false }) {
-            return Err(TrtError::Trt(
-                "session was created with user-managed device memory; call \
-                 set_device_memory before running"
-                    .into(),
-            ));
-        }
+        self.device_memory.check_run()?;
         for (name, dev_ptr, shape) in device_inputs {
             let c_name =
                 CString::new(*name).map_err(|_| TrtError::UnknownTensor((*name).into()))?;
@@ -565,5 +619,82 @@ mod tests {
             assert!(matches!(view(wrong).i32_ptr(), Err(TrtError::Shape(_))));
         }
         assert_eq!(view(DType::F32).shape_i64(), vec![1i64, 2, 3]);
+    }
+
+    const UNSET: DeviceMemory = DeviceMemory::UserManaged { set: false };
+    const SET: DeviceMemory = DeviceMemory::UserManaged { set: true };
+    const PTR: usize = 0x7f00_0000; // 256-aligned
+
+    fn needs(n: usize) -> impl FnOnce() -> Result<usize> {
+        move || Ok(n)
+    }
+
+    fn is_dev_mem_err<T>(r: Result<T>) -> bool {
+        matches!(r, Err(TrtError::DeviceMemory(_)))
+    }
+
+    #[test]
+    fn run_requires_device_memory_on_user_managed_sessions() {
+        assert!(is_dev_mem_err(UNSET.check_run()));
+        assert!(SET.check_run().is_ok());
+        assert!(DeviceMemory::Owned.check_run().is_ok());
+    }
+
+    #[test]
+    fn bind_is_rejected_on_owned_sessions_without_querying_the_engine() {
+        let r = DeviceMemory::Owned.check_bind(PTR, 1024, || {
+            panic!("device_memory_size must not be queried for an owned session")
+        });
+        assert!(is_dev_mem_err(r));
+    }
+
+    #[test]
+    fn bind_accepts_an_exact_or_larger_buffer_and_makes_the_session_runnable() {
+        for state in [UNSET, SET] {
+            let (next, len) = state.check_bind(PTR, 1024, needs(1024)).unwrap();
+            assert_eq!(len, 1024);
+            assert!(next.check_run().is_ok());
+            assert_eq!(state.check_bind(PTR, 4096, needs(1024)).unwrap().1, 4096);
+        }
+    }
+
+    #[test]
+    fn bind_rejects_a_short_buffer() {
+        assert!(is_dev_mem_err(UNSET.check_bind(PTR, 1023, needs(1024))));
+        assert!(is_dev_mem_err(UNSET.check_bind(PTR, 0, needs(1))));
+    }
+
+    #[test]
+    fn bind_rejects_null_unless_the_engine_needs_zero_bytes() {
+        assert!(is_dev_mem_err(UNSET.check_bind(0, 1024, needs(1024))));
+        assert!(is_dev_mem_err(UNSET.check_bind(0, 0, needs(1024))));
+        // The bridge accepts NULL only with 0 bytes.
+        assert!(is_dev_mem_err(UNSET.check_bind(0, 64, needs(0))));
+        // (null, 0) for an engine that needs nothing: valid, and runnable after.
+        let (next, len) = UNSET.check_bind(0, 0, needs(0)).unwrap();
+        assert_eq!(len, 0);
+        assert!(next.check_run().is_ok());
+    }
+
+    #[test]
+    fn bind_rejects_a_misaligned_pointer() {
+        assert!(is_dev_mem_err(UNSET.check_bind(
+            PTR + 16,
+            1024,
+            needs(1024)
+        )));
+        assert!(UNSET.check_bind(PTR + 256, 1024, needs(1024)).is_ok());
+    }
+
+    #[test]
+    fn bind_propagates_a_failed_size_query() {
+        let r = UNSET.check_bind(PTR, 1024, || Err(TrtError::Trt("boom".into())));
+        assert!(matches!(r, Err(TrtError::Trt(_))));
+    }
+
+    #[test]
+    fn bind_rejects_sizes_that_overflow_i64() {
+        let big = i64::MAX as usize + 1;
+        assert!(is_dev_mem_err(UNSET.check_bind(PTR, big, needs(0))));
     }
 }

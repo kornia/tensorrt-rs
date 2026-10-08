@@ -136,13 +136,14 @@ impl Engine {
     /// session created with
     /// [`Session::with_stream_user_memory`](crate::Session::with_stream_user_memory).
     /// Several engines that never run concurrently can share one buffer sized to
-    /// the largest of their values.
+    /// the largest of their values. May be 0.
+    ///
+    /// The value is stateful: it changes with the weight-streaming budget, so
+    /// re-query it after changing that budget.
     pub fn device_memory_size(&self) -> Result<usize> {
         let n = unsafe { btrt_engine_device_memory_size(self.ptr) };
-        // The bridge returns -1 on failure without setting btrt_last_error, so
-        // do not attach (a possibly stale) last error here.
-        usize::try_from(n)
-            .map_err(|_| TrtError::Trt(format!("getDeviceMemorySizeV2 failed (returned {n})")))
+        // The bridge clears btrt_last_error on entry and sets it on every -1.
+        usize::try_from(n).map_err(|_| TrtError::Trt(last_trt_error()))
     }
 
     pub(crate) fn as_ptr(&self) -> *mut btrt_engine_t {

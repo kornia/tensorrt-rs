@@ -1,7 +1,7 @@
 # kornia-tensorrt
 
 Safe Rust API for NVIDIA TensorRT 10.x on top of
-[`kornia-tensorrt-sys`](../tensorrt-sys). The library name is `tensorrt`.
+[`kornia-tensorrt-sys`](https://github.com/kornia/tensorrt-rs/tree/main/crates/tensorrt-sys). The library name is `tensorrt`.
 
 - `Logger` → `Runtime` → `Engine` → `Session`, each holding an `Arc` to its
   parent so TensorRT objects are destroyed in the required order.

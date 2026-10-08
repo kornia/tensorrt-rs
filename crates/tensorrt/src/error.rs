@@ -16,6 +16,10 @@ pub enum TrtError {
     Driver(#[from] cudarc::driver::DriverError),
     #[error("TensorRT error: {0}")]
     Trt(String),
+    /// Misuse of user-managed activation memory
+    /// ([`Session::set_device_memory`](crate::Session::set_device_memory)).
+    #[error("device memory: {0}")]
+    DeviceMemory(String),
 }
 
 pub type Result<T> = std::result::Result<T, TrtError>;
@@ -60,6 +64,10 @@ mod tests {
         assert_eq!(
             TrtError::Trt("boom".into()).to_string(),
             "TensorRT error: boom"
+        );
+        assert_eq!(
+            TrtError::DeviceMemory("buffer too small".into()).to_string(),
+            "device memory: buffer too small"
         );
         // A stale engine cache must be distinguishable from a bad shape, and the
         // message must point at the usual cause.

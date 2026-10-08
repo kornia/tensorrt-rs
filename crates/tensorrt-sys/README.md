@@ -3,7 +3,7 @@
 Raw FFI bindings for NVIDIA TensorRT, via a pure-C shim over the TensorRT C++
 API (bindgen never sees C++ headers). Targets the TensorRT that ships with
 JetPack on Jetson Orin (10.3.x, aarch64). The library name is `tensorrt_sys`.
-The safe layer on top is [`kornia-tensorrt`](../tensorrt) in this workspace.
+The safe layer on top is [`kornia-tensorrt`](https://github.com/kornia/tensorrt-rs/tree/main/crates/tensorrt) in this workspace.
 
 - Compiles small C++ shims (`logger_shim`, `trt_bridge`, and `builder_shim`
   under the `builder` feature) with `cc`, then generates `btrt_*` bindings with
